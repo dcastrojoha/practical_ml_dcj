@@ -1,0 +1,147 @@
+---
+title: "Practical Machine Learning Project"
+author: "Daniel Castro"
+date: "12/4/2017"
+output: html_document
+---
+
+# Intro
+Our objective is to predict how a given exercise was done, by using data from different accelerometers applied on the participant's bodies.
+
+## Data
+* training: Contains info on the times of exercise, participants, how exercise was done, and different accelerometer readouts.  The outcome variable is labelled **classe**.
+* testing: Contains similar info as training, without having the classe variable.
+
+## Analysis Steps
+In brief, I performed the following steps in my prediction exercise:
+* Load and examine the Data
+* Data Manipulation and Cleanup
+* Model Training and Performance Analysis
+* Prediction and Outcomes
+
+# Load and Examine the Data
+## Loading the Data
+**Load Necessary Libraries**
+```{r, message=FALSE, error=FALSE, warning=FALSE}
+library('caret', quietly=TRUE); library('dplyr', quietly=TRUE); library('data.table', quietly=TRUE); library('curl', quietly=TRUE); library('parallel', quietly=TRUE); library('doParallel', quietly=TRUE); library('randomForest', quietly=TRUE);
+```
+
+**Load training/testing Data**
+```{r}
+# fread from the data.table package
+training <- as.data.frame(fread('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'))
+```
+```{r}
+# fread from the data.table package
+testing <- as.data.frame(fread('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'))
+```
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. I am citing them in case I use the document I create for this class for any purpose.
+
+## Examining the Data
+
+### Basic Data Structure
+I set eval=FALSE in this next section so the output of this step doesn't show.  However, this step showed me that we have a lot of empty predictors (either NA's or ""), that we have some variables that are not germaine to the analysis (V1 which is just an index, user_name, timestamps, window), and that our testing data didn't have the 'classe' variable.
+The relevant variables (kurtosis, pitch, skewness, etc) should all be of class numeric (even though they aren't now), and there's over 150 predictors that we could potentially choose from.
+```{r, eval=FALSE}
+# Distribution of the Class variable
+table(training$classe)
+
+# Check the table structure
+str(training); str(testing)
+head(training); head(testing)
+
+# Empty values
+colSums(is.na(training))
+```
+
+# Data Manipulation and Cleanup
+## Remove irrelevant variables from both testing and training set
+For the training set, I removed V1, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, and num_window.  From the test set I removed these same variables plus the problem_id variable.  These are not actually measurements in the experiment but general identifier variables.  
+```{r, warning=FALSE}
+training_v2 <- training[-c(1:7)] 
+testing_v2 <- testing[-c(1:7, 160)]
+```
+
+## Data Conversion
+First we convert all predictors to numeric, and the outcome variable (classe) to factor.  This makes model interpretation easier.  
+```{r, warning=FALSE}
+training_v2[c(1:152)] <- apply(training_v2[c(1:152)], 2, function(x) as.numeric(as.character(x)))
+training_v2$classe <- as.factor(training_v2$classe)
+
+testing_v2[c(1:152)] <- apply(testing_v2[c(1:152)], 2, function(x) as.numeric(as.character(x)))
+```
+## Treatment of NA's
+Where possible, we will modify NA values with column averages, or with zeroes if there are no column values at all to calculate averages.  There are also NA values in the testing set, which we will treat in the same way.
+```{r}
+# Modify actual NA values
+training_v2[c(1:152)] <- apply(training_v2[c(1:152)], 2, function(x) replace(x, is.na(x), mean(x, na.rm = TRUE)))
+
+# Modify Remaining empty columns (NaN) to all zero, as they only have either empty or "DIV/0!"
+training_v2[c(1:152)] <- apply(training_v2[c(1:152)], 2, function(x) replace(x, is.nan(x), mean(0, na.rm = TRUE)))
+
+testing_v2 <- apply(testing_v2, 2, function(x) replace(x, is.na(x), mean(0, na.rm = TRUE)))
+
+```
+
+Now our data is actually ready so that we can fit our model.
+
+# Model Training and Performance Analysis
+## Subslpitting Data for Validation
+Given that we have a large number of variables, we'll subsplit our data into a subtraining and validation sets.  The validation set will allow us to calculate our expected out of sample error rate.
+```{r}
+inTrain <- createDataPartition(y=training_v2$classe, p=0.7, list=FALSE)
+subtraining <- training_v2[inTrain, ]
+validation <- training_v2[-inTrain, ]
+dim(subtraining)
+dim(validation)
+```
+
+## Fitting our Model
+For this step we will enable parallel processing and run the model in an optimized manner, as otherwise it takes too long to compute.
+```{r, cache=TRUE}
+# Set up training using x, y format
+x <- subtraining[,-153]
+y <- subtraining[, 153]
+
+# Set up parallel processing
+cluster <- makeCluster(detectCores() - 1) # Convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+# Configure trainControl object
+fitControl <- trainControl(allowParallel = TRUE)
+
+# Create our training model
+mod_fit1 <- train(x,y, method='rf', data=subtraining, trControl=fitControl)
+
+# De-Register our parallel processing cluster
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+This is a basic random forest model, which is a classification model so it's well suited to our problem of classifying a given exercise given a large set of predictors.  This model constructs a collection of decision trees to find the best prediction.  
+
+## Assessing Model Performance
+The model has a very high accuracy on the *subtraining* set, and using the *validation* set gives us an indication of very low expected out of sample error (1-accuracy):
+```{r}
+# Final Fit Model
+mod_fit1$finalModel
+
+# Prediction on Validation Set and Error Calculation
+mod_valid <- predict(mod_fit1, newdata=validation)
+confusionMatrix(mod_valid, validation$classe)
+```
+
+Given that we have such high expected accuracy, we will proceed to predict variables on our testing data.
+
+## Apply predict function
+
+```{r}
+predictions <- predict(mod_fit1, testing_v2)
+```
+
+# Predictions
+The prediction for the 20 test cases is:
+```{r}
+predictions
+```
